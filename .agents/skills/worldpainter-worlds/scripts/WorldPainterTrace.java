@@ -114,10 +114,10 @@ public class WorldPainterTrace {
         recipe.put("minecraftVersion", target);
         recipe.put("shape", ocean ? "island" : "mainland");
         recipe.put("seaLevel", SEA);
-        recipe.put("heightmap", Map.of("file", "inputs/elevation.png", "minY", LOW, "maxY", HIGH));
+        recipe.put("heightmap", new HeightSpec("inputs/elevation.png", LOW, HIGH));
         recipe.put("surfaceMap", "inputs/surface.png");
         if (spawn != null && safeSpawn(spawn, heights, width, length)) {
-            recipe.put("spawn", Map.of("x", spawn.x, "z", spawn.z));
+            recipe.put("spawn", spawn);
         }
         JSON.writerWithDefaultPrettyPrinter().writeValue(output.resolve("recipe.json").toFile(), recipe);
 
@@ -329,6 +329,7 @@ public class WorldPainterTrace {
     }
 
     private record Position(int x, int z) {}
+    private record HeightSpec(String file, int minY, int maxY) {}
 
     // Ordinals are shared with the runner's TracedSurface and are part of the recipe format.
     private enum Cover {
