@@ -63,6 +63,7 @@ Place every input in an `inputs/` folder beside the recipe. Paths use forward sl
   - `terrain` takes a built-in WorldPainter terrain name such as `BLACKSTONE` or `RED_SAND`. Any nonzero pixel paints that terrain.
   - `layer` takes `forest`, `pine`, `jungle`, `swamp`, `frost`, or `caves`. Positive values map to intensities 1–15 for density layers or turn on a bit layer such as frost.
   - `layerFile` loads a native WorldPainter `.layer` from `inputs/`, such as a custom object or ground cover layer. It must be a per-block bit or nibble layer. Only load trusted files, which use Java object serialization. Inspect object placement in a sample export.
+- `surfaceMap` sets the terrain and biome from an 8-bit grayscale PNG with the [trace label values](reference-tracing.md#edit-the-trace). It takes precedence over procedural biome zones where its land labels match dry terrain. Later terrain masks can still override the material.
 
 ## Local export checks
 

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.MapperFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import org.pepsoft.minecraft.DataType;
+import org.pepsoft.minecraft.Material;
 import org.pepsoft.util.FileUtils;
 import org.pepsoft.util.PerlinNoise;
 import org.pepsoft.worldpainter.*;
@@ -11,12 +12,16 @@ import org.pepsoft.worldpainter.biomeschemes.Minecraft1_21Biomes;
 import org.pepsoft.worldpainter.colourschemes.HardcodedColourScheme;
 import org.pepsoft.worldpainter.exporting.WorldExportSettings;
 import org.pepsoft.worldpainter.layers.*;
+import org.pepsoft.worldpainter.layers.bo2.Bo2ObjectTube;
+import org.pepsoft.worldpainter.objects.GenericObject;
+import org.pepsoft.worldpainter.objects.WPObject;
 import org.pepsoft.worldpainter.platforms.JavaPlatformProvider;
 import org.pepsoft.worldpainter.plugins.PlatformManager;
 import org.pepsoft.worldpainter.plugins.WPPluginManager;
 import org.pepsoft.worldpainter.tools.scripts.ScriptingContext;
 
 import javax.imageio.ImageIO;
+import javax.vecmath.Point3i;
 import java.awt.*;
 import java.awt.color.ColorSpace;
 import java.awt.geom.Line2D;
@@ -168,7 +173,12 @@ public class WorldPainterWorlds {
             dimension.setBorderLevel(model.sea);
             dimension.setBorderSize(0);
         }
-        dimension.setCustomLayers(model.inputs.customLayers());
+        List<CustomLayer> layers = model.inputs.customLayers();
+        Bo2Layer cherry = model.inputs.hasCherry ? cherryLayer() : null;
+        if (cherry != null) {
+            layers.add(cherry);
+        }
+        dimension.setCustomLayers(layers);
 
         // A halo keeps slopes continuous across tiles and avoids recomputing expensive landforms for each neighbour.
         int stride = TILE_SIZE + 2;
@@ -195,7 +205,7 @@ public class WorldPainterWorlds {
                         tile.setTerrain(x, z, model.inputs.terrain(startX + x, startZ + z, surface.terrain));
                         tile.setLayerValue(Biome.INSTANCE, x, z, surface.biome);
                         if (surface.trees > 0) {
-                            tile.setLayerValue(surface.woodland, x, z, surface.trees);
+                            tile.setLayerValue(surface.woodland == null ? cherry : surface.woodland, x, z, surface.trees);
                         }
                         if (surface.snow) {
                             tile.setBitLayerValue(Frost.INSTANCE, x, z, true);
@@ -216,6 +226,39 @@ public class WorldPainterWorlds {
         }
         result.put("terrain", coverage.report(1));
         return world;
+    }
+
+    private static Bo2Layer cherryLayer() {
+        List<WPObject> trees = new ArrayList<>();
+        Material trunk = Material.get("minecraft:cherry_log");
+        for (int size : new int[]{7, 9}) {
+            int centre = size / 2, height = size - 1;
+            Material[] blocks = new Material[size * size * height];
+            for (int y = 2; y < height; y++) {
+                for (int z = 0; z < size; z++) {
+                    for (int x = 0; x < size; x++) {
+                        double dx = x - centre, dz = z - centre, dy = (y - height + 2) * 1.7;
+                        if (dx * dx + dz * dz + dy * dy < centre * centre + 1
+                                && Math.floorMod(x * 13 + z * 19 + y * 7, 17) != 0) {
+                            blocks[x + z * size + y * size * size] = Material.LEAVES_CHERRY;
+                        }
+                    }
+                }
+            }
+            for (int y = 0; y < height - 2; y++) {
+                blocks[centre + centre * size + y * size * size] = trunk;
+            }
+            GenericObject tree = new GenericObject("Cherry " + size, size, size, height, blocks);
+            tree.setAttribute(WPObject.ATTRIBUTE_OFFSET, new Point3i(-centre, -centre, 0));
+            trees.add(tree);
+        }
+        Bo2Layer layer = new Bo2Layer(new Bo2ObjectTube("Traced cherry groves", trees),
+                "Cherry trees placed inside traced grove regions", new Color(0xcb7f9d));
+        layer.setDensity(12);
+        layer.setGridX(4);
+        layer.setGridY(4);
+        layer.setRandomDisplacement(2);
+        return layer;
     }
 
     private static String export(World2 world, Path output, WorldExportSettings settings) throws Exception {
@@ -539,7 +582,7 @@ public class WorldPainterWorlds {
                   Integer caves, Palette defaultRegion, Position spawn, List<Landform> landforms,
                   List<Region> regions, List<Waterway> waterways, List<Trail> trails, List<Waypoint> waypoints,
                   List<Landmass> landmasses, List<Zone> biomeZones, List<Ridge> ridges,
-                  HeightInput heightmap, List<MaskInput> masks) {
+                  HeightInput heightmap, List<MaskInput> masks, String surfaceMap) {
         String target() {
             return minecraftVersion == null ? "1.21.11" : minecraftVersion;
         }
@@ -727,6 +770,37 @@ public class WorldPainterWorlds {
     record Land(float elevation, int height, int water, boolean river) {}
     record Surface(Terrain terrain, int biome, Layer woodland, int trees, boolean snow, int caves, int colour) {}
 
+    // Ordinals are the grayscale pixel values emitted by WorldPainterTrace.
+    private enum TracedSurface {
+        WATER(null, BIOME_OCEAN, Terrain.SAND, 0x367a9c),
+        MEADOW(Palette.MEADOW), FOREST(Palette.FOREST), TAIGA(Palette.TAIGA),
+        JUNGLE(Palette.JUNGLE), SWAMP(Palette.SWAMP), DESERT(Palette.DESERT), BADLANDS(Palette.BADLANDS),
+        ROCK(null, BIOME_STONY_PEAKS, Terrain.STONE_MIX, 0x879082),
+        SNOW(null, BIOME_FROZEN_PEAKS, Terrain.STONE_MIX, 0xe5edf0),
+        CHERRY(null, BIOME_CHERRY_GROVE, Terrain.GRASS, 0xcb7f9d),
+        VOLCANIC(null, BIOME_WINDSWEPT_HILLS, Terrain.BLACKSTONE, 0x4e4947),
+        MAGMA(null, BIOME_WINDSWEPT_HILLS, Terrain.MAGMA, 0xc15727),
+        BEACH(null, BIOME_BEACH, Terrain.SAND, 0xe0c58f),
+        RIVER(null, BIOME_RIVER, Terrain.GRAVEL, 0x408b9f);
+
+        final Palette palette;
+        final int biome, colour;
+        final Terrain terrain;
+
+        TracedSurface(Palette palette) {
+            this(palette, palette.biome, palette.terrain, palette.colour);
+        }
+
+        TracedSurface(Palette palette, int biome, Terrain terrain, int colour) {
+            this.palette = palette;
+            this.biome = biome;
+            this.terrain = terrain;
+            this.colour = colour;
+        }
+
+        private static final TracedSurface[] CODES = values();
+    }
+
     enum MaskLayer {
         FOREST(DeciduousForest.INSTANCE), PINE(PineForest.INSTANCE), JUNGLE(Jungle.INSTANCE),
         SWAMP(SwampLand.INSTANCE), FROST(Frost.INSTANCE), CAVES(Caves.INSTANCE);
@@ -826,12 +900,29 @@ public class WorldPainterWorlds {
         private final PaintMask[] terrainMasks;
         private final PaintMask[] layerMasks;
         private final Raster heightmap;
+        private final Raster surfaceMap;
+        private final boolean hasCherry;
         private long rasterBytes;
 
         Inputs(Path root, Recipe recipe) throws Exception {
             this.root = root.toRealPath();
             this.recipe = recipe;
             heightmap = recipe.heightmap == null ? null : readRaster(recipe.heightmap.file, 16);
+            surfaceMap = recipe.surfaceMap == null ? null : readRaster(recipe.surfaceMap, 8);
+            boolean cherry = false;
+            if (surfaceMap != null) {
+                int[] row = new int[recipe.width];
+                for (int z = 0; z < recipe.length; z++) {
+                    surfaceMap.getSamples(0, z, recipe.width, 1, 0, row);
+                    for (int code : row) {
+                        if (code >= TracedSurface.CODES.length) {
+                            throw new IllegalArgumentException("Invalid surface map code: " + code);
+                        }
+                        cherry |= code == TracedSurface.CHERRY.ordinal();
+                    }
+                }
+            }
+            hasCherry = cherry;
             List<PaintMask> terrain = new ArrayList<>(), paint = new ArrayList<>();
             for (MaskInput mask : list(recipe.masks)) {
                 Raster raster = readRaster(mask.file, 8);
@@ -936,6 +1027,10 @@ public class WorldPainterWorlds {
                 }
             }
             return fallback;
+        }
+
+        TracedSurface tracedSurface(int x, int z) {
+            return surfaceMap == null ? null : TracedSurface.CODES[surfaceMap.getSample(x, z, 0)];
         }
 
         int colour(int x, int z, Land land, Surface surface) {
@@ -1176,16 +1271,29 @@ public class WorldPainterWorlds {
         Surface surface(int x, int z, Land land, double slope) {
             int h = land.height;
             double patch = cover.getPerlinNoise(x / 46.0, z / 46.0);
+            TracedSurface traced = inputs.tracedSurface(x, z);
             if (h < land.water) {
                 int depth = land.water - h;
                 Terrain bottom = depth < 5 && patch > -0.13 ? Terrain.SAND : Terrain.GRAVEL;
-                return new Surface(bottom, land.river ? BIOME_RIVER : depth > 18 ? BIOME_DEEP_OCEAN : BIOME_OCEAN,
-                        null, 0, false, 0, land.river ? 0x418f9d : 0x367a9c);
+                boolean river = land.river || traced == TracedSurface.RIVER;
+                return new Surface(bottom, river ? BIOME_RIVER : depth > 18 ? BIOME_DEEP_OCEAN : BIOME_OCEAN,
+                        null, 0, false, 0, river ? 0x418f9d : 0x367a9c);
             }
             boolean nearSpawn = spawn != null && Math.abs(x - spawn.x) <= 12 && Math.abs(z - spawn.z) <= 12;
-            Palette palette = palette(x, z, patch);
             int caveValue = nearSpawn || h <= sea + 8 ? 0
                     : (int) Math.round(caveStrength * smooth((patch + 0.28) * 2.8));
+            if (traced != null && traced != TracedSurface.WATER && traced != TracedSurface.RIVER) {
+                Palette palette = traced.palette;
+                int density = traced == TracedSurface.CHERRY ? 12 : palette == null ? 0 : palette.density;
+                int trees = nearSpawn || slope > 1.1 ? 0
+                        : (int) Math.round(density * (0.5 + 0.5 * smooth((patch + 0.21) * 3.25)));
+                Terrain terrain = !onTrail(x, z) || slope > 1 || traced == TracedSurface.SNOW
+                        ? traced.terrain : Terrain.GRASS_PATH;
+                return new Surface(terrain, traced.biome, palette == null ? null : palette.woodland,
+                        terrain == Terrain.GRASS_PATH ? 0 : trees, traced == TracedSurface.SNOW, caveValue,
+                        terrain == Terrain.GRASS_PATH ? 0xc4a46b : traced.colour);
+            }
+            Palette palette = palette(x, z, patch);
             boolean snow = h >= snowLine + patch * 26 && palette != Palette.BADLANDS && palette != Palette.DESERT;
             if (h <= sea + 3 && slope <= 0.85 && palette != Palette.SWAMP) {
                 return new Surface(Terrain.SAND, BIOME_BEACH, null, 0, false, caveValue, 0xddc68d);

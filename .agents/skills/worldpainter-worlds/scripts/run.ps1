@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory, Position = 0)]
-    [ValidateSet('preview', 'build', 'generate', 'sample', 'export')]
+    [ValidateSet('trace', 'preview', 'build', 'generate', 'sample', 'export')]
     [string]$Mode,
 
     [Parameter(Mandatory, Position = 1)]
@@ -23,7 +23,27 @@ param(
     [Nullable[int]]$AtZ,
 
     [ValidateRange(0, 2)]
-    [int]$TileRadius = 0
+    [int]$TileRadius = 0,
+
+    [ValidateRange(128, 8192)]
+    [int]$Blocks = 1536,
+
+    [string]$Name = 'Traced World',
+
+    [long]$Seed = 314159,
+
+    [ValidateSet('1.21.11', '26.1')]
+    [string]$MinecraftVersion = '1.21.11',
+
+    [string]$Crop = '-',
+
+    [string]$WaterMask = '-',
+
+    [ValidateRange(-32, 32)]
+    [int]$WaterBias = 0,
+
+    [ValidateRange(0.25, 1.8)]
+    [double]$ReliefScale = 1.0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -45,6 +65,13 @@ $logback = Join-Path $PSScriptRoot 'logback.xml'
 $javaArgs = @("-Xmx$Heap", '-Djava.awt.headless=true', "-Dlogback.configurationFile=$logback")
 if ($ExportThreads -gt 0) {
     $javaArgs += "-Dorg.pepsoft.worldpainter.threads=$ExportThreads"
+}
+if ($Mode -eq 'trace') {
+    $javaArgs += @('-cp', (Join-Path $lib '*'), (Join-Path $PSScriptRoot 'WorldPainterTrace.java'),
+        $InputFile, $OutputDir, "$Blocks", $Name, "$Seed", $MinecraftVersion, $Crop, $WaterMask, "$WaterBias",
+        $ReliefScale.ToString([Globalization.CultureInfo]::InvariantCulture))
+    & $java @javaArgs
+    exit $LASTEXITCODE
 }
 $javaArgs += @('-cp', (Join-Path $lib '*'), (Join-Path $PSScriptRoot 'WorldPainterWorlds.java'),
     $Mode.ToLowerInvariant(), $InputFile, $OutputDir)
