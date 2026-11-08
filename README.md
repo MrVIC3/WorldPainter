@@ -1,5 +1,11 @@
 # WorldPainter
 
+## Generate worlds with Codex
+
+This fork adds a [WorldPainter world-generation skill](.agents/skills/worldpainter-worlds/SKILL.md) and a headless recipe runner. A small JSON recipe specifies terrain, biomes, water, trails, and waypoints. Preview the geography, then write an editable WorldPainter project and a Minecraft Java Edition save.
+
+Open this repository in Codex and invoke `$worldpainter-worlds`. The [recipe reference](.agents/skills/worldpainter-worlds/references/recipes.md) includes setup and CLI commands. The runner uses the official WorldPainter 2.27.1 distribution and a Java 21 JDK.
+
 WorldPainter is an interactive map generator for Minecraft. It allows you to "paint" landscapes using similar tools as a regular paint program. Sculpt and mould the terrain, paint materials, trees, snow and ice, etc. onto it, and much more.
 
 ## Distributing

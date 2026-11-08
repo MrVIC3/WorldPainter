@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "name": "Emberreach",
+  "seed": 75239049,
+  "width": 1536,
+  "length": 1536,
+  "minecraftVersion": "1.21.11",
+  "shape": "island",
+  "baseHeight": 94,
+  "relief": 23,
+  "snowLine": 165,
+  "caves": 8,
+  "defaultRegion": "meadow",
+  "landforms": [
+    {"kind":"ridge","x":585,"z":501,"radiusX":357,"radiusZ":146,"angle":-28,"height":148},
+    {"kind":"ridge","x":814,"z":450,"radiusX":220,"radiusZ":128,"angle":28,"height":82},
+    {"kind":"hill","x":484,"z":912,"radiusX":245,"radiusZ":248,"height":46},
+    {"kind":"mesa","x":1066,"z":938,"radiusX":269,"radiusZ":196,"angle":-35,"height":68},
+    {"kind":"basin","x":745,"z":817,"radiusX":178,"radiusZ":172,"height":42},
+    {"kind":"basin","x":974,"z":655,"radiusX":208,"radiusZ":78,"angle":-7,"height":28},
+    {"kind":"hill","x":1127,"z":445,"radiusX":223,"radiusZ":187,"height":28},
+    {"kind":"basin","x":477,"z":1253,"radiusX":199,"radiusZ":213,"height":22}
+  ],
+  "regions": [
+    {"palette":"taiga","x":588,"z":478,"radius":373},
+    {"palette":"alpine","x":756,"z":382,"radius":178},
+    {"palette":"forest","x":444,"z":917,"radius":312},
+    {"palette":"swamp","x":749,"z":988,"radius":157},
+    {"palette":"badlands","x":1070,"z":985,"radius":277},
+    {"palette":"meadow","x":819,"z":685,"radius":158},
+    {"palette":"forest","x":1174,"z":461,"radius":188}
+  ],
+  "waterways": [
+    {"width":33,"depth":8,"points":[{"x":730,"z":800},{"x":735,"z":907},{"x":795,"z":992},{"x":756,"z":1094},{"x":810,"z":1210},{"x":773,"z":1350},{"x":813,"z":1490}]},
+    {"width":18,"depth":5,"points":[{"x":973,"z":655},{"x":1032,"z":668},{"x":1078,"z":628},{"x":1175,"z":643},{"x":1300,"z":613},{"x":1470,"z":589}]}
+  ],
+  "trails": [
+    {"width":5,"points":[{"x":806,"z":747},{"x":832,"z":686},{"x":861,"z":638},{"x":890,"z":579},{"x":914,"z":537}]},
+    {"width":6,"points":[{"x":625,"z":727},{"x":584,"z":778},{"x":531,"z":839},{"x":535,"z":911},{"x":501,"z":965}]},
+    {"width":5,"points":[{"x":837,"z":806},{"x":891,"z":843},{"x":947,"z":830},{"x":991,"z":857},{"x":1052,"z":859},{"x":1087,"z":910},{"x":1117,"z":971}]}
+  ],
+  "waypoints": [
+    {"name":"Frostspine","x":591,"z":499},
+    {"name":"Foxwood","x":501,"z":965},
+    {"name":"Siltwater Marsh","x":739,"z":986},
+    {"name":"Copper Table","x":1067,"z":922},
+    {"name":"Eastwater Cut","x":1057,"z":591}
+  ]
+}
