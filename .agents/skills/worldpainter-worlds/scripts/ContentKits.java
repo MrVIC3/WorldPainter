@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+import org.jnbt.ByteTag;
 import org.jnbt.CompoundTag;
 import org.jnbt.IntTag;
+import org.jnbt.ListTag;
 import org.jnbt.StringTag;
 import org.jnbt.Tag;
 import org.pepsoft.minecraft.Chest;
@@ -320,7 +322,19 @@ final class ContentKits {
     static Entity mob(String kind, double x, double y, double z, String profession) {
         Entity entity = new Entity("minecraft:" + kind);
         Map<String, Tag> tags = new HashMap<>(entity.toNBT().getValue());
-        tags.put("PersistenceRequired", new org.jnbt.ByteTag("PersistenceRequired", (byte) 1));
+        tags.put("PersistenceRequired", new ByteTag("PersistenceRequired", (byte) 1));
+        String weapon = switch (kind) {
+            case "pillager" -> "crossbow";
+            case "skeleton" -> "bow";
+            default -> null;
+        };
+        if (weapon != null) {
+            // WorldPainter writes entity NBT at the 1.18 data version. Minecraft upgrades the hand slots on load.
+            CompoundTag mainHand = new CompoundTag("", Map.of("id", new StringTag("id", "minecraft:" + weapon),
+                    "Count", new ByteTag("Count", (byte) 1)));
+            tags.put("HandItems", new ListTag<>("HandItems", CompoundTag.class,
+                    List.of(mainHand, new CompoundTag("", Map.of()))));
+        }
         if (profession != null) {
             tags.put("VillagerData", new CompoundTag("VillagerData", Map.of(
                     "type", new StringTag("type", "minecraft:plains"),
