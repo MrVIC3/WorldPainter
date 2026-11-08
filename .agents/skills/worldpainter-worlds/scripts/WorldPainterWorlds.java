@@ -3,17 +3,20 @@ import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.MapperFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
+import org.pepsoft.minecraft.DataType;
 import org.pepsoft.util.FileUtils;
 import org.pepsoft.util.PerlinNoise;
 import org.pepsoft.worldpainter.*;
 import org.pepsoft.worldpainter.biomeschemes.Minecraft1_21Biomes;
 import org.pepsoft.worldpainter.layers.*;
+import org.pepsoft.worldpainter.platforms.JavaPlatformProvider;
 import org.pepsoft.worldpainter.plugins.PlatformManager;
 import org.pepsoft.worldpainter.plugins.WPPluginManager;
 
 import javax.imageio.ImageIO;
 import java.awt.*;
 import java.awt.image.BufferedImage;
+import java.io.File;
 import java.io.IOException;
 import java.nio.file.*;
 import java.util.*;
@@ -23,6 +26,7 @@ import java.util.prefs.Preferences;
 import java.util.prefs.PreferencesFactory;
 
 import static org.pepsoft.worldpainter.Constants.TILE_SIZE;
+import static org.pepsoft.worldpainter.Constants.DIM_NORMAL;
 import static org.pepsoft.worldpainter.DefaultPlugin.JAVA_ANVIL_1_21_11;
 import static org.pepsoft.worldpainter.DefaultPlugin.JAVA_ANVIL_26_1;
 import static org.pepsoft.worldpainter.Dimension.Anchor.NORMAL_DETAIL;
@@ -194,6 +198,11 @@ public class WorldPainterWorlds {
     }
 
     private static String export(World2 world, Path output) throws Exception {
+        var manager = PlatformManager.getInstance();
+        var platform = world.getPlatform();
+        if (!(manager.getPlatformProvider(platform) instanceof JavaPlatformProvider provider)) {
+            throw new IllegalArgumentException("Export requires a built-in Minecraft Java platform");
+        }
         String folderName = FileUtils.sanitiseName(world.getName());
         require(folderName != null && !folderName.isBlank(), "World needs a name for the Minecraft save folder");
         Path saves = Files.createDirectory(output.resolve("minecraft"));
@@ -202,14 +211,14 @@ public class WorldPainterWorlds {
         for (int i = 0; i < Terrain.CUSTOM_TERRAIN_COUNT; i++) {
             Terrain.setCustomMaterial(i, world.getMixedMaterial(i));
         }
-        var exporter = PlatformManager.getInstance().getExporter(world, EXPORT_EVERYTHING);
+        var exporter = manager.getExporter(world, EXPORT_EVERYTHING);
         System.err.println("Exporting Minecraft save...");
         exporter.export(saves.toFile(), world.getName(), null, null);
         require(Files.isRegularFile(save.resolve("level.dat")), "Exporter did not produce level.dat");
-        try (var regions = Files.list(save.resolve("region"))) {
-            require(regions.anyMatch(file -> file.getFileName().toString().endsWith(".mca")),
-                    "Exporter did not produce Overworld region files");
-        }
+        File dimension = provider.getDimensionDir(platform, save.toFile(), DIM_NORMAL);
+        File[] regions = provider.getRegionFiles(platform, new File(dimension, "region"), DataType.REGION);
+        require(regions != null && Arrays.stream(regions).anyMatch(file -> file.isFile() && file.length() > 0),
+                "Exporter did not produce Overworld region files");
         return "minecraft/" + folderName;
     }
 
