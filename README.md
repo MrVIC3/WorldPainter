@@ -2,7 +2,7 @@
 
 ## Generate worlds with Codex
 
-This fork adds a [WorldPainter world-generation skill](.agents/skills/worldpainter-worlds/SKILL.md) and a headless recipe runner. A small JSON recipe specifies terrain, biomes, water, trails, and waypoints. Preview the geography, then write an editable WorldPainter project and a Minecraft Java Edition save.
+This fork adds a [WorldPainter world-generation skill](.agents/skills/worldpainter-worlds/SKILL.md) and a headless recipe runner. A JSON recipe can describe custom island outlines, biome zones, ridge lines, rivers, and trails. Heightmaps and layer masks provide precise local control. Preview the whole map and inspect small sample saves before exporting an editable project and Minecraft Java Edition save.
 
 Open this repository in Codex and invoke `$worldpainter-worlds`. The [recipe reference](.agents/skills/worldpainter-worlds/references/recipes.md) includes setup and CLI commands. The runner uses the official WorldPainter 2.27.1 distribution and a Java 21 JDK.
 

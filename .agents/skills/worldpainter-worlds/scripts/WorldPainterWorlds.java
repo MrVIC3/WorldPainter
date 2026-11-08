@@ -8,14 +8,22 @@ import org.pepsoft.util.FileUtils;
 import org.pepsoft.util.PerlinNoise;
 import org.pepsoft.worldpainter.*;
 import org.pepsoft.worldpainter.biomeschemes.Minecraft1_21Biomes;
+import org.pepsoft.worldpainter.colourschemes.HardcodedColourScheme;
+import org.pepsoft.worldpainter.exporting.WorldExportSettings;
 import org.pepsoft.worldpainter.layers.*;
 import org.pepsoft.worldpainter.platforms.JavaPlatformProvider;
 import org.pepsoft.worldpainter.plugins.PlatformManager;
 import org.pepsoft.worldpainter.plugins.WPPluginManager;
+import org.pepsoft.worldpainter.tools.scripts.ScriptingContext;
 
 import javax.imageio.ImageIO;
 import java.awt.*;
+import java.awt.color.ColorSpace;
+import java.awt.geom.Line2D;
+import java.awt.geom.Path2D;
+import java.awt.geom.PathIterator;
 import java.awt.image.BufferedImage;
+import java.awt.image.Raster;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.*;
@@ -45,7 +53,7 @@ public class WorldPainterWorlds {
             .enable(MapperFeature.ACCEPT_CASE_INSENSITIVE_ENUMS)
             .build();
 
-    /** Run preview, build, generate or export into a new directory. */
+    /** Run preview, build, generate, sample or export into a new directory. */
     public static void main(String[] args) throws Exception {
         // The core loads layer icons through GUIUtils, which accesses preferences even in headless mode.
         Thread.currentThread().setContextClassLoader(WorldPainterWorlds.class.getClassLoader());
@@ -59,8 +67,10 @@ public class WorldPainterWorlds {
     }
 
     private static void run(String[] args) throws Exception {
-        require(args.length == 3 && Set.of("preview", "build", "generate", "export").contains(args[0]),
-                "Usage: WorldPainterWorlds.java <preview|build|generate|export> <recipe.json|input.world> <new-output-dir>");
+        require((args.length == 3 && Set.of("preview", "build", "generate", "export").contains(args[0]))
+                        || (args.length == 6 && args[0].equals("sample")),
+                "Usage: <preview|build|generate|export> <recipe.json|input.world> <new-output-dir>"
+                        + " or sample <input.world> <new-output-dir> <x> <z> <tile-radius>");
         String command = args[0];
         Path input = Path.of(args[1]).toAbsolutePath().normalize();
         Path output = Path.of(args[2]).toAbsolutePath().normalize();
@@ -71,25 +81,35 @@ public class WorldPainterWorlds {
         result.put("command", command);
         result.put("worldPainter", Version.VERSION);
 
-        if (command.equals("export")) {
+        if (command.equals("export") || command.equals("sample")) {
             initialise();
             WorldIO reader = new WorldIO();
             try (var stream = Files.newInputStream(input)) {
                 reader.load(stream);
             }
             World2 world = reader.getWorld();
-            Files.createDirectory(output);
             result.put("source", input.toString());
-            result.put("minecraft", export(world, output));
+            if (command.equals("sample")) {
+                sample(world, output, result, Integer.parseInt(args[3]), Integer.parseInt(args[4]),
+                        Integer.parseInt(args[5]));
+            } else {
+                Files.createDirectory(output);
+                result.put("minecraft", export(world, output, EXPORT_EVERYTHING));
+            }
         } else {
             require(Files.size(input) <= 256 * 1024, "Recipe exceeds 256 KiB");
             byte[] recipeBytes = Files.readAllBytes(input);
             Recipe recipe = JSON.readValue(recipeBytes, Recipe.class);
             require(recipe != null, "Recipe must be a JSON object");
             recipe.validate();
-            Model model = new Model(recipe);
+            if (!command.equals("preview") || list(recipe.masks).stream().anyMatch(mask -> mask.layerFile != null)) {
+                initialise();
+            }
+            Inputs assets = new Inputs(input.getParent(), recipe);
+            Model model = new Model(recipe, assets);
             Files.createDirectory(output);
             Files.write(output.resolve("recipe.json"), recipeBytes);
+            assets.copyTo(output);
             result.put("name", recipe.name);
             result.put("target", recipe.target());
             result.put("width", recipe.width);
@@ -107,7 +127,6 @@ public class WorldPainterWorlds {
             result.put("preview", "overview.png");
             render(model, output.resolve("overview.png"), result);
             if (!command.equals("preview")) {
-                initialise();
                 World2 world = build(model, result);
                 String worldFile = recipe.name + ".world";
                 try (var stream = Files.newOutputStream(output.resolve(worldFile), StandardOpenOption.CREATE_NEW)) {
@@ -116,7 +135,7 @@ public class WorldPainterWorlds {
                 result.put("world", worldFile);
                 System.err.printf(Locale.ROOT, "Saved %s in %.1f s%n", worldFile, elapsed(start));
                 if (command.equals("generate")) {
-                    result.put("minecraft", export(world, output));
+                    result.put("minecraft", export(world, output, EXPORT_EVERYTHING));
                 }
             }
         }
@@ -137,18 +156,19 @@ public class WorldPainterWorlds {
 
     private static World2 build(Model model, Map<String, Object> result) {
         Recipe recipe = model.recipe;
-        Platform platform = recipe.target().equals("26.1") ? JAVA_ANVIL_26_1 : JAVA_ANVIL_1_21_11;
+        Platform platform = recipe.platform();
         HeightMapTileFactory factory = TileFactoryFactory.createFlatTileFactory(
                 recipe.seed, Terrain.GRASS, MIN_Y, MAX_Y, model.base, model.sea, false, false);
         World2 world = new World2(platform, recipe.seed, factory);
         world.setName(recipe.name);
         world.setSpawnPoint(new Point(model.spawn.x, model.spawn.z));
         var dimension = world.getDimension(NORMAL_DETAIL);
-        if (recipe.layout() == Shape.ISLAND) {
+        if (recipe.layout() != Shape.MAINLAND) {
             dimension.setBorder(org.pepsoft.worldpainter.Dimension.Border.ENDLESS_WATER);
             dimension.setBorderLevel(model.sea);
             dimension.setBorderSize(0);
         }
+        dimension.setCustomLayers(model.inputs.customLayers());
 
         // A halo keeps slopes continuous across tiles and avoids recomputing expensive landforms for each neighbour.
         int stride = TILE_SIZE + 2;
@@ -172,7 +192,7 @@ public class WorldPainterWorlds {
                         Surface surface = model.surface(startX + x, startZ + z, land, slope);
                         tile.setHeight(x, z, land.elevation);
                         tile.setWaterLevel(x, z, land.water);
-                        tile.setTerrain(x, z, surface.terrain);
+                        tile.setTerrain(x, z, model.inputs.terrain(startX + x, startZ + z, surface.terrain));
                         tile.setLayerValue(Biome.INSTANCE, x, z, surface.biome);
                         if (surface.trees > 0) {
                             tile.setLayerValue(surface.woodland, x, z, surface.trees);
@@ -183,6 +203,7 @@ public class WorldPainterWorlds {
                         if (surface.caves > 0) {
                             tile.setLayerValue(Caves.INSTANCE, x, z, surface.caves);
                         }
+                        model.inputs.paint(tile, x, z, startX + x, startZ + z);
                         coverage.add(land, surface);
                     }
                 }
@@ -197,7 +218,7 @@ public class WorldPainterWorlds {
         return world;
     }
 
-    private static String export(World2 world, Path output) throws Exception {
+    private static String export(World2 world, Path output, WorldExportSettings settings) throws Exception {
         var manager = PlatformManager.getInstance();
         var platform = world.getPlatform();
         if (!(manager.getPlatformProvider(platform) instanceof JavaPlatformProvider provider)) {
@@ -211,7 +232,7 @@ public class WorldPainterWorlds {
         for (int i = 0; i < Terrain.CUSTOM_TERRAIN_COUNT; i++) {
             Terrain.setCustomMaterial(i, world.getMixedMaterial(i));
         }
-        var exporter = manager.getExporter(world, EXPORT_EVERYTHING);
+        var exporter = manager.getExporter(world, settings);
         System.err.println("Exporting Minecraft save...");
         exporter.export(saves.toFile(), world.getName(), null, null);
         require(Files.isRegularFile(save.resolve("level.dat")), "Exporter did not produce level.dat");
@@ -220,6 +241,94 @@ public class WorldPainterWorlds {
         require(regions != null && Arrays.stream(regions).anyMatch(file -> file.isFile() && file.length() > 0),
                 "Exporter did not produce Overworld region files");
         return "minecraft/" + folderName;
+    }
+
+    private static void sample(World2 world, Path output, Map<String, Object> result, int x, int z, int radius)
+            throws Exception {
+        require(radius >= 0 && radius <= 2, "Sample tile radius must be in [0, 2]");
+        var dimension = world.getDimension(NORMAL_DETAIL);
+        int tx = Math.floorDiv(x, TILE_SIZE), tz = Math.floorDiv(z, TILE_SIZE);
+        require(dimension != null && dimension.getTile(tx, tz) != null,
+                "Sample centre must be on a painted Overworld tile");
+        Set<Point> tiles = new HashSet<>();
+        for (int iz = tz - radius; iz <= tz + radius; iz++) {
+            for (int ix = tx - radius; ix <= tx + radius; ix++) {
+                if (dimension.getTile(ix, iz) != null) {
+                    tiles.add(new Point(ix, iz));
+                }
+            }
+        }
+        int y = Math.max(dimension.getIntHeightAt(x, z), dimension.getWaterLevelAt(x, z)) + 1;
+        world.setName(world.getName() + " Sample " + x + " " + z);
+        world.setSpawnPointDimension(NORMAL_DETAIL);
+        world.setSpawnPoint(new Point(x, z));
+        world.setGameType(GameType.CREATIVE);
+        world.setAllowCheats(true);
+        Files.createDirectory(output);
+        String save = export(world, output, new WorldExportSettings(Set.of(DIM_NORMAL), tiles, null));
+        result.put("minecraft", save);
+        result.put("spawn", coordinates(new Position(x, z), y));
+        result.put("tiles", tiles.size());
+        result.put("detail", "detail.png");
+        renderSample(world, output.resolve(save), output.resolve("detail.png"), tx, tz, radius, tiles, result);
+    }
+
+    private static void renderSample(World2 world, Path save, Path target, int tx, int tz, int radius,
+                                     Set<Point> tiles, Map<String, Object> result) throws IOException {
+        int side = (radius * 2 + 1) * TILE_SIZE;
+        int left = (tx - radius) * TILE_SIZE, top = (tz - radius) * TILE_SIZE;
+        int[] heights = new int[side * side];
+        Arrays.fill(heights, Integer.MIN_VALUE);
+        int[] colours = new int[heights.length];
+        Map<String, Integer> visible = new HashMap<>();
+        int chunks = 0;
+        try (var store = PlatformManager.getInstance().getChunkStore(world.getPlatform(), save.toFile(), DIM_NORMAL)) {
+            for (Point tile : tiles) {
+                int firstX = tile.x * TILE_SIZE / 16, firstZ = tile.y * TILE_SIZE / 16;
+                for (int dz = 0; dz < TILE_SIZE / 16; dz++) {
+                    for (int dx = 0; dx < TILE_SIZE / 16; dx++) {
+                        int cx = firstX + dx, cz = firstZ + dz;
+                        var chunk = store.getChunk(cx, cz);
+                        if (chunk == null) {
+                            continue;
+                        }
+                        chunks++;
+                        for (int z = 0; z < 16; z++) {
+                            for (int x = 0; x < 16; x++) {
+                                int y = chunk.getHighestNonAirBlock(x, z);
+                                if (y < world.getMinHeight()) {
+                                    continue;
+                                }
+                                int i = (cz * 16 + z - top) * side + cx * 16 + x - left;
+                                var material = chunk.getMaterial(x, y, z);
+                                heights[i] = y;
+                                colours[i] = material.colour & 0xffffff;
+                                visible.merge(material.name, 1, Integer::sum);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        BufferedImage image = new BufferedImage(side, side, BufferedImage.TYPE_INT_RGB);
+        for (int z = 0; z < side; z++) {
+            for (int x = 0; x < side; x++) {
+                int i = z * side + x, y = heights[i];
+                if (y == Integer.MIN_VALUE) {
+                    image.setRGB(x, z, 0x17212b);
+                    continue;
+                }
+                int west = x == 0 || heights[i - 1] == Integer.MIN_VALUE ? y : heights[i - 1];
+                int north = z == 0 || heights[i - side] == Integer.MIN_VALUE ? y : heights[i - side];
+                image.setRGB(x, z, shade(colours[i], clamp(1 + 0.06 * (y - west + y - north), 0.6, 1.35)));
+            }
+        }
+        ImageIO.write(image, "PNG", target.toFile());
+        result.put("chunks", chunks);
+        result.put("detailOrigin", Map.of("x", left, "z", top));
+        result.put("visibleBlocks", visible.entrySet().stream()
+                .sorted(Map.Entry.<String, Integer>comparingByValue().reversed().thenComparing(Map.Entry.comparingByKey()))
+                .limit(12).toList());
     }
 
     private static void render(Model model, Path target, Map<String, Object> result) throws IOException {
@@ -243,7 +352,8 @@ public class WorldPainterWorlds {
                 if (land.height < land.water) {
                     shade = clamp(1.20 - (land.water - land.height) * 0.014, 0.64, 1.16);
                 }
-                image.setRGB(px, py, shade(surface.colour, shade));
+                int colour = model.inputs.colour(x, z, land, surface);
+                image.setRGB(px, py, shade(colour, shade));
             }
         }
         Graphics2D graphics = image.createGraphics();
@@ -275,7 +385,7 @@ public class WorldPainterWorlds {
     }
 
     private static int shade(int rgb, double amount) {
-        int r = Math.min(255, (int) ((rgb >> 16) * amount));
+        int r = Math.min(255, (int) (((rgb >>> 16) & 255) * amount));
         int g = Math.min(255, (int) (((rgb >> 8) & 255) * amount));
         int b = Math.min(255, (int) ((rgb & 255) * amount));
         return (r << 16) | (g << 8) | b;
@@ -427,13 +537,19 @@ public class WorldPainterWorlds {
     record Recipe(int version, String name, Long seed, int width, int length, String minecraftVersion,
                   Shape shape, Integer seaLevel, Integer baseHeight, Integer relief, Integer snowLine,
                   Integer caves, Palette defaultRegion, Position spawn, List<Landform> landforms,
-                  List<Region> regions, List<Waterway> waterways, List<Trail> trails, List<Waypoint> waypoints) {
+                  List<Region> regions, List<Waterway> waterways, List<Trail> trails, List<Waypoint> waypoints,
+                  List<Landmass> landmasses, List<Zone> biomeZones, List<Ridge> ridges,
+                  HeightInput heightmap, List<MaskInput> masks) {
         String target() {
             return minecraftVersion == null ? "1.21.11" : minecraftVersion;
         }
 
         Shape layout() {
-            return shape == null ? Shape.ISLAND : shape;
+            return shape == null ? (list(landmasses).isEmpty() ? Shape.ISLAND : Shape.ARCHIPELAGO) : shape;
+        }
+
+        Platform platform() {
+            return target().equals("26.1") ? JAVA_ANVIL_26_1 : JAVA_ANVIL_1_21_11;
         }
 
         int sea() {
@@ -458,6 +574,36 @@ public class WorldPainterWorlds {
             require(list(landforms).size() <= 32 && list(regions).size() <= 32
                             && list(waterways).size() <= 16 && list(trails).size() <= 16 && list(waypoints).size() <= 24,
                     "Too many landforms, regions, waterways, trails or waypoints");
+            require(list(landmasses).size() <= 48 && list(biomeZones).size() <= 32
+                            && list(ridges).size() <= 32 && list(masks).size() <= 12,
+                    "Too many landmasses, biome zones, ridges or masks");
+            require((layout() == Shape.ARCHIPELAGO) == !list(landmasses).isEmpty(),
+                    "Archipelago shape requires landmasses, and other shapes cannot have landmasses");
+            require(heightmap == null || (heightmap.minY >= MIN_Y + 5 && heightmap.maxY <= MAX_Y - 5
+                            && heightmap.minY < heightmap.maxY),
+                    "Heightmap needs increasing minY and maxY in [-59, 315]");
+            require(heightmap == null || list(landmasses).isEmpty(),
+                    "Choose a heightmap or landmass outlines to define the base terrain");
+            for (Landmass landmass : list(landmasses)) {
+                require(landmass != null && landmass.shoreWidth() >= 8 && landmass.shoreWidth() <= 256,
+                        "Landmass coastWidth must be in [8, 256]");
+                checkPolygon(landmass.points);
+            }
+            for (Zone zone : list(biomeZones)) {
+                require(zone != null && zone.palette != null, "Each biome zone needs a palette");
+                checkPolygon(zone.points);
+            }
+            for (Ridge ridge : list(ridges)) {
+                require(ridge != null && ridge.width >= 16 && ridge.width <= 768
+                                && ridge.height >= 1 && ridge.height <= 240,
+                        "Ridges need width in [16, 768] and height in [1, 240]");
+                checkRoute(ridge.points);
+            }
+            for (MaskInput mask : list(masks)) {
+                require(mask != null && (mask.terrain != null ? 1 : 0) + (mask.layer != null ? 1 : 0)
+                                + (mask.layerFile != null ? 1 : 0) == 1,
+                        "Each mask needs exactly one of terrain, layer or layerFile");
+            }
             if (spawn != null) {
                 checkPosition(spawn.x, spawn.z);
             }
@@ -510,9 +656,31 @@ public class WorldPainterWorlds {
                 previous = point;
             }
         }
+
+        private void checkPolygon(List<Position> points) {
+            require(points != null && points.size() >= 3 && points.size() <= 96,
+                    "Polygons require 3–96 vertices and close automatically");
+            Set<Position> vertices = new HashSet<>();
+            for (Position point : points) {
+                require(point != null && vertices.add(point), "Polygon vertices must be distinct");
+                checkPosition(point.x, point.z);
+            }
+            long twiceArea = 0;
+            int n = points.size();
+            for (int i = 0; i < n; i++) {
+                Position a = points.get(i), b = points.get((i + 1) % n);
+                twiceArea += (long) a.x * b.z - (long) b.x * a.z;
+                for (int j = i + 2; j < n && !(i == 0 && j == n - 1); j++) {
+                    Position c = points.get(j), d = points.get((j + 1) % n);
+                    require(!Line2D.linesIntersect(a.x, a.z, b.x, b.z, c.x, c.z, d.x, d.z),
+                            "Polygon edges must not cross");
+                }
+            }
+            require(twiceArea != 0, "Polygon must enclose an area");
+        }
     }
 
-    enum Shape { ISLAND, MAINLAND }
+    enum Shape { ISLAND, MAINLAND, ARCHIPELAGO }
     enum Form { HILL, RIDGE, MESA, BASIN }
     enum Palette {
         MEADOW(BIOME_MEADOW, Terrain.GRASS, null, 0, 0x88a859),
@@ -544,11 +712,266 @@ public class WorldPainterWorlds {
         }
     }
     record Region(Palette palette, int x, int z, int radius) {}
+    record Landmass(List<Position> points, Integer coastWidth) {
+        int shoreWidth() {
+            return coastWidth == null ? 48 : coastWidth;
+        }
+    }
+    record Zone(Palette palette, List<Position> points) {}
+    record Ridge(int width, int height, List<Position> points) {}
+    record HeightInput(String file, int minY, int maxY) {}
+    record MaskInput(String file, Terrain terrain, MaskLayer layer, String layerFile) {}
     record Waterway(int width, int depth, Integer level, List<Position> points) {}
     record Trail(int width, List<Position> points) {}
     record Waypoint(String name, int x, int z) {}
     record Land(float elevation, int height, int water, boolean river) {}
     record Surface(Terrain terrain, int biome, Layer woodland, int trees, boolean snow, int caves, int colour) {}
+
+    enum MaskLayer {
+        FOREST(DeciduousForest.INSTANCE), PINE(PineForest.INSTANCE), JUNGLE(Jungle.INSTANCE),
+        SWAMP(SwampLand.INSTANCE), FROST(Frost.INSTANCE), CAVES(Caves.INSTANCE);
+
+        final Layer nativeLayer;
+
+        MaskLayer(Layer nativeLayer) {
+            this.nativeLayer = nativeLayer;
+        }
+    }
+
+    private static final class Outline {
+        private final Line2D.Double[] edges;
+        private final Path2D path = new Path2D.Double();
+
+        Outline(List<Position> points) {
+            int n = points.size();
+            for (int i = 0; i < n; i++) {
+                Position before = points.get((i + n - 1) % n), at = points.get(i), after = points.get((i + 1) % n);
+                double x = mix(at.x, before.x), z = mix(at.z, before.z);
+                if (i == 0) {
+                    path.moveTo(x, z);
+                } else {
+                    path.lineTo(x, z);
+                }
+                path.quadTo(at.x, at.z, mix(at.x, after.x), mix(at.z, after.z));
+            }
+            path.closePath();
+            List<Line2D.Double> flattened = new ArrayList<>();
+            double[] point = new double[6];
+            PathIterator iterator = path.getPathIterator(null, 2);
+            iterator.currentSegment(point);
+            double firstX = point[0], firstZ = point[1], x = firstX, z = firstZ;
+            for (iterator.next(); !iterator.isDone(); iterator.next()) {
+                if (iterator.currentSegment(point) == PathIterator.SEG_CLOSE) {
+                    point[0] = firstX;
+                    point[1] = firstZ;
+                }
+                flattened.add(new Line2D.Double(x, z, point[0], point[1]));
+                x = point[0];
+                z = point[1];
+            }
+            edges = flattened.toArray(Line2D.Double[]::new);
+        }
+
+        private static double mix(int vertex, int neighbour) {
+            return vertex + (neighbour - vertex) * 0.24;
+        }
+
+        boolean contains(double x, double z) {
+            return path.contains(x, z);
+        }
+
+        double signedDistance(double x, double z) {
+            double closest = Double.POSITIVE_INFINITY;
+            for (Line2D.Double edge : edges) {
+                closest = Math.min(closest, edge.ptSegDistSq(x, z));
+            }
+            double distance = Math.sqrt(closest);
+            return contains(x, z) ? distance : -distance;
+        }
+    }
+
+    private record Coast(Outline outline, double width, Rectangle bounds) {
+        Coast(Landmass landmass) {
+            this(new Outline(landmass.points), landmass.shoreWidth());
+        }
+
+        private Coast(Outline outline, double width) {
+            this(outline, width, outline.path.getBounds());
+            int padding = (int) Math.ceil(width * 1.5);
+            bounds.grow(padding, padding);
+        }
+
+        double inland(double x, double z, double warpX, double warpZ) {
+            if (!bounds.contains(x, z)) {
+                return -1;
+            }
+            double amplitude = Math.min(36, width * 0.74);
+            return outline.signedDistance(x + amplitude * warpX, z + amplitude * warpZ) / width;
+        }
+    }
+
+    private record BiomeZone(Outline outline, Palette palette) {
+        BiomeZone(Zone zone) {
+            this(new Outline(zone.points), zone.palette);
+        }
+    }
+
+    private record PaintMask(Raster raster, Terrain terrain, Layer layer) {}
+
+    private static final class Inputs {
+        private final Path root;
+        private final Recipe recipe;
+        private final Map<Path, Raster> rasters = new LinkedHashMap<>();
+        private final Map<Path, CustomLayer> layers = new LinkedHashMap<>();
+        private final PaintMask[] terrainMasks;
+        private final PaintMask[] layerMasks;
+        private final Raster heightmap;
+        private long rasterBytes;
+
+        Inputs(Path root, Recipe recipe) throws Exception {
+            this.root = root.toRealPath();
+            this.recipe = recipe;
+            heightmap = recipe.heightmap == null ? null : readRaster(recipe.heightmap.file, 16);
+            List<PaintMask> terrain = new ArrayList<>(), paint = new ArrayList<>();
+            for (MaskInput mask : list(recipe.masks)) {
+                Raster raster = readRaster(mask.file, 8);
+                if (mask.terrain != null) {
+                    require(!mask.terrain.isCustom(), "Terrain mask must select a built-in terrain");
+                    terrain.add(new PaintMask(raster, mask.terrain, null));
+                } else {
+                    Layer layer = mask.layer != null ? mask.layer.nativeLayer : readLayer(mask.layerFile);
+                    paint.add(new PaintMask(raster, null, layer));
+                }
+            }
+            terrainMasks = terrain.toArray(PaintMask[]::new);
+            layerMasks = paint.toArray(PaintMask[]::new);
+        }
+
+        private Path asset(String name, String extension) throws IOException {
+            require(name != null && name.startsWith("inputs/") && name.endsWith(extension)
+                            && name.matches("inputs/[A-Za-z0-9][A-Za-z0-9_. -]*"),
+                    "Expected an inputs/<filename>" + extension + " path");
+            Path relative = Path.of(name);
+            Path file = root.resolve(relative);
+            require(Files.isRegularFile(file) && file.toRealPath().startsWith(root), "Asset not found: " + name);
+            return relative;
+        }
+
+        private Raster readRaster(String name, int bits) throws IOException {
+            Path relative = asset(name, ".png");
+            Raster cached = rasters.get(relative);
+            if (cached != null) {
+                require(cached.getSampleModel().getSampleSize(0) == bits, "Wrong bit depth for " + name);
+                return cached;
+            }
+            rasterBytes += (long) recipe.width * recipe.length * (bits / 8);
+            require(rasterBytes <= Runtime.getRuntime().maxMemory() / 3,
+                    "Raster inputs exceed one third of JVM heap. Increase -Heap or use fewer masks.");
+            try (var input = ImageIO.createImageInputStream(root.resolve(relative).toFile())) {
+                var readers = ImageIO.getImageReaders(input);
+                require(readers.hasNext(), "Unreadable PNG: " + name);
+                var reader = readers.next();
+                try {
+                    reader.setInput(input);
+                    require(reader.getFormatName().equalsIgnoreCase("png") && reader.getWidth(0) == recipe.width
+                                    && reader.getHeight(0) == recipe.length,
+                            "PNG dimensions must match the recipe: " + name);
+                    var type = reader.getRawImageType(0);
+                    require(type != null && type.getColorModel().getColorSpace().getType() == ColorSpace.TYPE_GRAY
+                                    && type.getSampleModel().getNumBands() == 1
+                                    && type.getSampleModel().getSampleSize(0) == bits,
+                            "Expected a " + bits + "-bit grayscale PNG: " + name);
+                    Raster raster = reader.read(0).getRaster();
+                    rasters.put(relative, raster);
+                    return raster;
+                } finally {
+                    reader.dispose();
+                }
+            }
+        }
+
+        private Layer readLayer(String name) throws Exception {
+            Path relative = asset(name, ".layer");
+            CustomLayer cached = layers.get(relative);
+            if (cached != null) {
+                return cached;
+            }
+            Layer layer = new ScriptingContext(true).getLayer().fromFile(root.resolve(relative).toString()).go();
+            require(layer instanceof CustomLayer, "Expected a WorldPainter custom layer: " + name);
+            require(layer.getDataSize() == Layer.DataSize.BIT || layer.getDataSize() == Layer.DataSize.NIBBLE,
+                    "Only per-block bit and nibble custom layers can be painted: " + name);
+            require(layers.values().stream().noneMatch(other -> other.getId().equals(layer.getId())),
+                    "Duplicate custom layer ID: " + name);
+            layers.put(relative, (CustomLayer) layer);
+            return layer;
+        }
+
+        List<CustomLayer> customLayers() {
+            return new ArrayList<>(layers.values());
+        }
+
+        void copyTo(Path output) throws IOException {
+            Set<Path> paths = new LinkedHashSet<>(rasters.keySet());
+            paths.addAll(layers.keySet());
+            if (!paths.isEmpty()) {
+                Files.createDirectory(output.resolve("inputs"));
+                for (Path path : paths) {
+                    Files.copy(root.resolve(path), output.resolve(path));
+                }
+            }
+        }
+
+        double elevation(int x, int z) {
+            int px = Math.max(0, Math.min(x, recipe.width - 1));
+            int pz = Math.max(0, Math.min(z, recipe.length - 1));
+            return recipe.heightmap.minY + heightmap.getSample(px, pz, 0)
+                    * ((recipe.heightmap.maxY - recipe.heightmap.minY) / 65535.0);
+        }
+
+        Terrain terrain(int x, int z, Terrain fallback) {
+            for (int i = terrainMasks.length - 1; i >= 0; i--) {
+                PaintMask mask = terrainMasks[i];
+                if (mask.raster.getSample(x, z, 0) > 0) {
+                    return mask.terrain;
+                }
+            }
+            return fallback;
+        }
+
+        int colour(int x, int z, Land land, Surface surface) {
+            if (land.height < land.water) {
+                return surface.colour;
+            }
+            Terrain terrain = terrain(x, z, surface.terrain);
+            int colour = terrain == surface.terrain ? surface.colour
+                    : terrain.getColour(recipe.seed, x, z, land.height, land.height, recipe.platform(), COLOURS);
+            for (PaintMask mask : layerMasks) {
+                int value = mask.raster.getSample(x, z, 0);
+                if (value > 0 && mask.layer == Frost.INSTANCE) {
+                    colour = 0xe5edf0;
+                } else if (value > 0 && (mask.layer instanceof TreeLayer || mask.layer == SwampLand.INSTANCE)) {
+                    colour = shade(colour, 1 - value / 900.0);
+                }
+            }
+            return colour;
+        }
+
+        void paint(Tile tile, int x, int z, int worldX, int worldZ) {
+            for (PaintMask mask : layerMasks) {
+                int value = mask.raster.getSample(worldX, worldZ, 0);
+                if (value == 0) {
+                    continue;
+                }
+                if (mask.layer.getDataSize() == Layer.DataSize.BIT) {
+                    tile.setBitLayerValue(mask.layer, x, z, true);
+                } else {
+                    tile.setLayerValue(mask.layer, x, z, 1 + (value * 14 + 127) / 255);
+                }
+            }
+        }
+
+        private static final ColourScheme COLOURS = new HardcodedColourScheme();
+    }
 
     private record Massif(Landform form, double sin, double cos, int bound) {
         Massif(Landform form) {
@@ -651,17 +1074,22 @@ public class WorldPainterWorlds {
 
     private static final class Model {
         final Recipe recipe;
+        final Inputs inputs;
         final int sea, base, relief, snowLine, caveStrength;
         final double coastScale, edgeWidth;
         final Massif[] massifs;
+        final Coast[] coasts;
+        final BiomeZone[] zones;
+        final Route[] ridges;
         final Region[] regions;
         final Route[] rivers, trails;
         final PerlinNoise macro, details, cover;
         final Palette defaultPalette;
         final Position spawn;
 
-        Model(Recipe recipe) {
+        Model(Recipe recipe, Inputs inputs) {
             this.recipe = recipe;
+            this.inputs = inputs;
             sea = recipe.sea();
             base = recipe.baseHeight == null ? sea + 22 : recipe.baseHeight;
             relief = recipe.relief == null ? 27 : recipe.relief;
@@ -675,6 +1103,10 @@ public class WorldPainterWorlds {
             details = new PerlinNoise(recipe.seed ^ 0x2f112a9034417e75L);
             cover = new PerlinNoise(recipe.seed ^ 0x44ac321c0d983c9bL);
             massifs = list(recipe.landforms).stream().map(Massif::new).toArray(Massif[]::new);
+            coasts = list(recipe.landmasses).stream().map(Coast::new).toArray(Coast[]::new);
+            zones = list(recipe.biomeZones).stream().map(BiomeZone::new).toArray(BiomeZone[]::new);
+            ridges = list(recipe.ridges).stream().map(ridge -> new Route(recipe, ridge.points,
+                    ridge.width * 0.5, 0, ridge.height)).toArray(Route[]::new);
             regions = list(recipe.regions).toArray(Region[]::new);
             rivers = list(recipe.waterways).stream()
                     .map(water -> new Route(recipe, water.points, water.width * 0.5,
@@ -688,11 +1120,28 @@ public class WorldPainterWorlds {
             double broad = macro.getPerlinNoise(x / coastScale, z / coastScale);
             double folds = details.getPerlinNoise(x / 82.0, z / 82.0);
             double texture = details.getPerlinNoise(x / 25.0, z / 25.0);
-            double height = base + relief * (1.65 * broad + 0.62 * folds + 0.18 * texture);
+            double height = inputs.heightmap == null
+                    ? base + relief * (1.65 * broad + 0.62 * folds + 0.18 * texture) : inputs.elevation(x, z);
             for (Massif massif : massifs) {
                 height += massif.elevation(x, z, folds + texture * 0.35);
             }
-            if (recipe.layout() == Shape.ISLAND) {
+            for (Route ridge : ridges) {
+                double d2 = ridge.distanceSquared(x + folds * 14, z + texture * 14);
+                height += ridge.depth * smooth(1 - d2 / (ridge.radius * ridge.radius)) * (1 + 0.8 * folds);
+            }
+            if (coasts.length > 0) {
+                double warpX = 1.65 * details.getPerlinNoise(x / 49.0 + 7, z / 49.0 - 3) + texture * 0.7;
+                double warpZ = 1.65 * details.getPerlinNoise(x / 49.0 - 11, z / 49.0 + 9) + folds * 0.7;
+                double inland = -1;
+                for (Coast coast : coasts) {
+                    inland = Math.max(inland, coast.inland(x, z, warpX, warpZ));
+                }
+                double edge = Math.min(Math.min(x, z), Math.min(recipe.width - 1 - x, recipe.length - 1 - z));
+                inland = Math.min(inland, clamp((edge - 3) / 12, -1, 1));
+                height = inland < 0
+                        ? sea - (29 - 4 * folds) * smooth(-inland)
+                        : sea + (height - sea) * smooth(inland);
+            } else if (inputs.heightmap == null && recipe.layout() == Shape.ISLAND) {
                 double u = (2.0 * x / (recipe.width - 1) - 1);
                 double v = (2.0 * z / (recipe.length - 1) - 1);
                 double bays = macro.getPerlinNoise(x / (coastScale * 0.53) + 5, z / (coastScale * 0.53) - 3);
@@ -755,6 +1204,12 @@ public class WorldPainterWorlds {
         }
 
         private Palette palette(int x, int z, double patch) {
+            for (int i = zones.length - 1; i >= 0; i--) {
+                BiomeZone zone = zones[i];
+                if (zone.outline.contains(x + patch * 29, z + patch * 21)) {
+                    return zone.palette;
+                }
+            }
             Palette chosen = defaultPalette;
             double best = 1.0 + patch * 0.38;
             for (Region region : regions) {

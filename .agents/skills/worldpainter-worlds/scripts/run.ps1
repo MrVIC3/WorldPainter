@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory, Position = 0)]
-    [ValidateSet('preview', 'build', 'generate', 'export')]
+    [ValidateSet('preview', 'build', 'generate', 'sample', 'export')]
     [string]$Mode,
 
     [Parameter(Mandatory, Position = 1)]
@@ -16,7 +16,14 @@ param(
     [string]$Heap = '3g',
 
     [ValidateRange(0, 128)]
-    [int]$ExportThreads = 0
+    [int]$ExportThreads = 0,
+
+    [Nullable[int]]$AtX,
+
+    [Nullable[int]]$AtZ,
+
+    [ValidateRange(0, 2)]
+    [int]$TileRadius = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -41,5 +48,11 @@ if ($ExportThreads -gt 0) {
 }
 $javaArgs += @('-cp', (Join-Path $lib '*'), (Join-Path $PSScriptRoot 'WorldPainterWorlds.java'),
     $Mode.ToLowerInvariant(), $InputFile, $OutputDir)
+if ($Mode -eq 'sample') {
+    if ($null -eq $AtX -or $null -eq $AtZ) {
+        throw 'Sample requires -AtX and -AtZ in Minecraft block coordinates.'
+    }
+    $javaArgs += @("$AtX", "$AtZ", "$TileRadius")
+}
 & $java @javaArgs
 exit $LASTEXITCODE
