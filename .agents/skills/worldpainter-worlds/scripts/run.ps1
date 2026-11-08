@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory, Position = 0)]
-    [ValidateSet('trace', 'preview', 'build', 'generate', 'sample', 'export')]
+    [ValidateSet('trace', 'preview', 'build', 'generate', 'sample', 'export', 'populate')]
     [string]$Mode,
 
     [Parameter(Mandatory, Position = 1)]
@@ -43,7 +43,11 @@ param(
     [int]$WaterBias = 0,
 
     [ValidateRange(0.25, 1.8)]
-    [double]$ReliefScale = 1.0
+    [double]$ReliefScale = 1.0,
+
+    [string]$Content,
+
+    [string]$MinecraftJar
 )
 
 $ErrorActionPreference = 'Stop'
@@ -72,6 +76,34 @@ if ($Mode -eq 'trace') {
         $ReliefScale.ToString([Globalization.CultureInfo]::InvariantCulture))
     & $java @javaArgs
     exit $LASTEXITCODE
+}
+if ($Mode -eq 'populate') {
+    if (!$Content) {
+        throw 'Populate requires -Content with the path to the content plan.'
+    }
+    $javac = Join-Path (Split-Path $java) $(if ($IsWindows) { 'javac.exe' } else { 'javac' })
+    $classes = [IO.Directory]::CreateTempSubdirectory('worldpainter-populate-')
+    $libraryPath = Join-Path $lib '*'
+    $code = 1
+    try {
+        & $javac -encoding UTF-8 -proc:none -cp $libraryPath -d $classes.FullName `
+            (Join-Path $PSScriptRoot 'WorldPainterWorlds.java') (Join-Path $PSScriptRoot 'WorldPainterPopulate.java') `
+            (Join-Path $PSScriptRoot 'ContentKits.java') (Join-Path $PSScriptRoot 'VanillaTemplates.java')
+        $code = $LASTEXITCODE
+        if ($code -eq 0) {
+            $classpath = $classes.FullName + [IO.Path]::PathSeparator + $libraryPath
+            $javaArgs += @('-cp', $classpath, 'WorldPainterPopulate', $InputFile, $Content, $OutputDir)
+            if ($MinecraftJar) {
+                $javaArgs += $MinecraftJar
+            }
+            & $java @javaArgs
+            $code = $LASTEXITCODE
+        }
+    } finally {
+        Get-ChildItem -LiteralPath $classes.FullName -File | Remove-Item
+        [IO.Directory]::Delete($classes.FullName)
+    }
+    exit $code
 }
 $javaArgs += @('-cp', (Join-Path $lib '*'), (Join-Path $PSScriptRoot 'WorldPainterWorlds.java'),
     $Mode.ToLowerInvariant(), $InputFile, $OutputDir)

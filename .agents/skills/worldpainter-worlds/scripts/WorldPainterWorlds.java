@@ -152,7 +152,7 @@ public class WorldPainterWorlds {
         System.out.println(summary);
     }
 
-    private static void initialise() {
+    static void initialise() {
         Locale.setDefault(Locale.US);
         Configuration config = new Configuration();
         Configuration.setInstance(config);
